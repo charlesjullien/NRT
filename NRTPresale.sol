@@ -1,25 +1,16 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.9;
+
+pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-//"0xd374410e9bb22f3771ffbd0b40a07c0cf44a04fa", "0xd374410e9bb22f3771ffbd0b40a07c0cf44a04fb", "0xd374410e9bb22f3771ffbd0b40a07c0cf44a04fc"
 
 contract NRTPresale is Ownable {
 
-    IERC721 public GMX; // adress == 0x17f4BAa9D35Ee54fFbCb2608e20786473c7aa49f // (check it tho)
+    IERC721 public GMX; // address == 0x17f4BAa9D35Ee54fFbCb2608e20786473c7aa49f // (check it tho)
     IERC20 public StableCoin;
-
-    uint256 public PRIVATE_SALE_VESTING_END_DATE;
-    uint256 public PRIVATE_SALE_VESTING_MONTHLY_UNLOCK_RATE = 15;
-    // seconds to 100% full unlock : 17515872
-
-    uint totalNRTInvested;
-
-    mapping(address => uint) public totalPrivateSaleVault;
-    mapping(address => uint) public currentPrivateSaleVault;
 
     mapping(address => bool) public isWhitelisted;
     mapping(address => uint) totalInvestedUSD;
@@ -29,26 +20,36 @@ contract NRTPresale is Ownable {
     mapping(address => uint) secondsForOneNRT;
     mapping(address => uint) lastWithdrawTimestamp;
 
+    mapping(address => uint) public totalPrivateSaleVault;
+    mapping(address => uint) public currentPrivateSaleVault;
+
+    uint256 public PRIVATE_SALE_VESTING_END_DATE;
+    uint256 public PRIVATE_SALE_VESTING_MONTHLY_UNLOCK_RATE = 15;
+    // seconds to 100% full unlock : 17515872
+
+    uint totalNRTInvested;
+    uint totalUSDInvested;
 
     address teamWallet;
 
-    constructor (address GMXContract, address stableCoinContract, address _teamWallet) {
-        GMX = IERC721(GMXContract);
-        StableCoin = IERC20(stableCoinContract);
+    bool presaleClosed;
+
+
+    constructor (address _GMXContract, address _USDCContract, address _teamWallet) {
+        GMX = IERC721(_GMXContract);
+        StableCoin = IERC20(_USDCContract);
         teamWallet = _teamWallet;
         PRIVATE_SALE_VESTING_END_DATE = block.timestamp + 3; //+ 26274240; <==== REMETTRE CA // 26274240 == (nb seconds in a day) x 304.1 days (10 months).
-        lastWithdrawTimestamp[msg.sender] = PRIVATE_SALE_VESTING_END_DATE;
-        totalInvestedNRT[0x5B38Da6a701c568545dCfcB03FcB875f56beddC4] = 267; // delete de là
-        amountLeftToWithdraw[0x5B38Da6a701c568545dCfcB03FcB875f56beddC4] = 267;
-        secondsForOneNRT[msg.sender] = (2669 / totalInvestedNRT[msg.sender]); //... à là
+
+        // lastWithdrawTimestamp[msg.sender] = PRIVATE_SALE_VESTING_END_DATE; // delete de là
+        //totalInvestedNRT[0x5B38Da6a701c568545dCfcB03FcB875f56beddC4] = 317377; 
+        //amountLeftToWithdraw[0x5B38Da6a701c568545dCfcB03FcB875f56beddC4] = 317377;
+        // secondsForOneNRT[msg.sender] = (26274240 / totalInvestedNRT[msg.sender]); //... à là
     }
 
-    function changeStableCoinInterface (address newStableCoinContract) external onlyOwner {
-        StableCoin = IERC20(newStableCoinContract);
-    }
 
-    function whitelistOneUser (address _user) external onlyOwner {
-        isWhitelisted[_user] = true;
+    function changeStableCoinInterface (address _newStableCoinContract) external onlyOwner {
+        StableCoin = IERC20(_newStableCoinContract);
     }
 
     function whitelistManyUsers(address[] memory _users) external onlyOwner {
@@ -57,6 +58,9 @@ contract NRTPresale is Ownable {
         }
     }
 
+    function closePresale () external onlyOwner {
+        presaleClosed = true;
+    }
 
     function allowedInvestingamount () public view returns (uint) {
         uint nbrOfGMXAssets;
@@ -66,28 +70,48 @@ contract NRTPresale is Ownable {
             total = (nbrOfGMXAssets * 500) + 2000;
         else
             total = (nbrOfGMXAssets * 500);
-        return (total);
+        return (total * 10**6 - totalInvestedUSD[msg.sender]);
     }
 
-    function invest (uint _amount) external {
+    function allowStableCoinContractToSpend1 (uint _USDamount) external {
+        _USDamount = _USDamount * 10**6;
         require (isWhitelisted[msg.sender] || GMX.balanceOf(msg.sender) > 0, "You either are not whitelisted or do not possess any GMX NFT.");
-        require (totalInvestedUSD[msg.sender] + (_amount * 5 * 10**5) < allowedInvestingamount(), "You cannot invest that much.");
-        
-        uint256 stableCoinAmount = _amount * 5 * 10**5; // stableCoin decimals == 6
-        require(StableCoin.balanceOf(msg.sender) >= stableCoinAmount, "Insufficient stableCoin balance.");
-        require(StableCoin.transferFrom(msg.sender, teamWallet, stableCoinAmount), "Failed to transfer stableCoin.");
+        require ((totalInvestedUSD[msg.sender] + _USDamount) < allowedInvestingamount(), "You cannot invest that much.");
+        require (_USDamount > 0, "amount must be greater than 0");
+        require (StableCoin.approve(msg.sender, _USDamount), "Stable coin contract failed to make an allowance for you.");
+    }
 
-        totalInvestedUSD[msg.sender] += stableCoinAmount;
-        totalInvestedNRT[msg.sender] += _amount;
+    function allowStableCoinContractToSpend2 (uint _USDamount) external {
+        _USDamount = _USDamount * 10**6;
+        require (isWhitelisted[msg.sender] || GMX.balanceOf(msg.sender) > 0, "You either are not whitelisted or do not possess any GMX NFT.");
+        require ((totalInvestedUSD[msg.sender] + _USDamount) < allowedInvestingamount(), "You cannot invest that much.");
+        require (_USDamount > 0, "amount must be greater than 0");
+        require (StableCoin.approve(address(this), _USDamount), "Stable coin contract failed to make an allowance for you.");
+    }
+
+    function invest (uint _USDamount) external {
+        _USDamount = _USDamount * 10**6;
+        require (isWhitelisted[msg.sender] || GMX.balanceOf(msg.sender) > 0, "You either are not whitelisted or do not possess any GMX NFT.");
+        require ((totalInvestedUSD[msg.sender] + _USDamount) < allowedInvestingamount(), "You cannot invest that much.");
+        require (_USDamount > 0, "amount must be greater than 0");
+        require (StableCoin.balanceOf(msg.sender) >= _USDamount, "Insufficient stableCoin balance.");
+        require (StableCoin.transferFrom(msg.sender, teamWallet, _USDamount));
+        require (presaleClosed == false, "Presale phase is now over");
+
+        totalInvestedUSD[msg.sender] += _USDamount;
+        totalInvestedNRT[msg.sender] += (_USDamount * 20) / 1000000;
         amountLeftToWithdraw[msg.sender] = totalInvestedNRT[msg.sender];
         secondsForOneNRT[msg.sender] = (17515872 / totalInvestedNRT[msg.sender]);
-        totalNRTInvested += _amount;
+        totalNRTInvested += (_USDamount * 20) / 1000000;
+        totalUSDInvested += _USDamount;
     }
+
 
     function releasePrivatesaleVesting () external {
         require(totalPrivateSaleVault[msg.sender] > 0, "You are not part of the private sale investors.");
         require(block.timestamp > PRIVATE_SALE_VESTING_END_DATE, "End date has not been reached yet for privates sale investors.");
-        
+        uint i = 0;
+        i = 1;
     }
 
     function getTimeLeftForPrivateSaleVestingRelease () public view returns (uint) {
@@ -104,4 +128,19 @@ contract NRTPresale is Ownable {
         return (secondsForOneNRT[msg.sender]);
     }
 
+    function getAllTotalUSDInvested () external onlyOwner view returns (uint) {
+        return (totalUSDInvested);
+    }
+
+    function getAllTotalNRTInvested () external onlyOwner view returns (uint) {
+        return (totalNRTInvested);
+    }
+
+    function getTotalUSDInvested () external view returns (uint) {
+        return (totalInvestedUSD[msg.sender]);
+    }
+
+    function getTotalNRTInvested () external view returns (uint) {
+        return (totalInvestedNRT[msg.sender]);
+    }
 }
